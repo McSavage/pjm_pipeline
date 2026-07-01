@@ -1,0 +1,9 @@
+requests
+psycopg2-binary
+python-dotenv
+pandas
+tqdm
+jupyter
+ipykernel
+matplotlib
+sqlalchemy
