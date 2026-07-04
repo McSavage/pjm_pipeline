@@ -28,9 +28,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(
 # ── DB helpers ────────────────────────────────────────────────────────────────
 
 def get_last_loaded_date(conn, feed_key: str) -> date | None:
+    # rows_inserted > 0 so a day that came back empty (e.g. verified RT data
+    # not yet published by PJM) gets retried on the next run instead of being
+    # marked done forever.
     cur = conn.cursor()
     cur.execute(
-        "SELECT MAX(date_loaded) FROM pjm_ingest_log WHERE feed = %s",
+        "SELECT MAX(date_loaded) FROM pjm_ingest_log WHERE feed = %s AND rows_inserted > 0",
         (feed_key,)
     )
     row = cur.fetchone()
