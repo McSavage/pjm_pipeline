@@ -62,9 +62,9 @@ def insert_lmp_rows(conn, table: str, rows: list[dict]) -> int:
     sql = f"""
         INSERT INTO {table}
             (datetime_beginning_utc, datetime_ending_utc,
-             pnode_id, pnode_name, voltage, type, zone,
+             pnode_id, pnode_name, voltage, type,
              lmp, congestion_price, marginal_loss_price)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ON CONFLICT (datetime_beginning_utc, pnode_name) DO NOTHING
     """
     inserted = 0
@@ -88,7 +88,6 @@ def insert_lmp_rows(conn, table: str, rows: list[dict]) -> int:
             r.get("pnode_name"),
             r.get("voltage"),
             r.get("type"),
-            r.get("zone"),
             r.get(lmp_field)          or r.get("total_lmp"),
             r.get(cong_field)         or r.get("congestion_price"),
             r.get(loss_field)         or r.get("marginal_loss_price"),

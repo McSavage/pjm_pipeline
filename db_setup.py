@@ -38,7 +38,6 @@ CREATE TABLE IF NOT EXISTS pjm_da_lmp (
     pnode_name              TEXT            NOT NULL,
     voltage                 TEXT,
     type                    TEXT,           -- ZONE, HUB, AGGREGATE, INTERFACE, BUS
-    zone                    TEXT,
     lmp                     NUMERIC(10,4),
     congestion_price        NUMERIC(10,4),
     marginal_loss_price     NUMERIC(10,4),
@@ -53,7 +52,6 @@ CREATE TABLE IF NOT EXISTS pjm_rt_lmp (
     pnode_name              TEXT            NOT NULL,
     voltage                 TEXT,
     type                    TEXT,
-    zone                    TEXT,
     lmp                     NUMERIC(10,4),
     congestion_price        NUMERIC(10,4),
     marginal_loss_price     NUMERIC(10,4),
