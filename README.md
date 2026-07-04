@@ -45,6 +45,8 @@ ingest_load.py         — hourly metered load ingest
 ingest_gen.py          — hourly generation-by-fuel ingest
 ingest_gen_capacity.py — hourly RTO-wide generation capacity ingest
 test_connection.py     — smoke test: verifies API key and connectivity
+weekly_update.sh       — runs all four incremental ingests in sequence; cron entry point
+logs/                  — weekly_update.sh output, one line per cron run
 01_lmp_explorer.ipynb  — exploratory notebook: zone comparison, DA/RT spread,
                          congestion ranking, fuel mix, DOM load vs LMP
 ```
@@ -65,6 +67,18 @@ rather than requiring explicit `--start`/`--end`:
 ```bash
 python ingest_lmp.py --feed both --incremental
 ```
+
+## Scheduling
+
+`weekly_update.sh` runs all four incremental ingests (LMP, load, gen, gen capacity) in
+sequence and logs output. Scheduled via cron to run every Monday morning:
+
+```bash
+0 6 * * 1 /home/daniel/projects/pjm_pipeline/weekly_update.sh >> /home/daniel/projects/pjm_pipeline/logs/weekly_update.log 2>&1
+```
+
+It continues past a failed step so one bad feed doesn't block the others, but exits
+non-zero overall if any step failed — check `logs/weekly_update.log` after each run.
 
 ## Rate limiting
 
