@@ -17,6 +17,7 @@ datacenters concentrate.
 pip install -r requirements.txt
 cp .env.example .env          # fill in DB credentials and PJM_API_KEY
 python db_setup.py            # creates schema (idempotent, safe to re-run)
+python install_queries.py     # installs saved query functions (idempotent, safe to re-run)
 ```
 
 ## Schema
@@ -30,6 +31,7 @@ python db_setup.py            # creates schema (idempotent, safe to re-run)
 | `pjm_gen_by_fuel` | hourly, per fuel type | `ingest_gen.py` | Generation mix: coal, gas, nuclear, solar, wind, etc. |
 | `pjm_gen_capacity` | hourly, RTO-wide | `ingest_gen_capacity.py` | Economic/emergency max MW + RPM committed capacity (system-wide, not zonal) |
 | `pjm_ingest_log` | one row per (feed, date) | all ingest scripts | Tracks loaded dates so `--incremental` skips already-loaded days |
+| `pjm_nerc_holidays` | one row per NERC holiday date | seeded by `db_setup.py` | On-peak/off-peak classification for `pjm_lmp_monthly_peak()` — seeded 2022-2032 |
 
 Indexes on `(time)` and `(zone/area, time)` for time-series and zone-filter queries.
 
@@ -39,6 +41,8 @@ Indexes on `(time)` and `(zone/area, time)` for time-series and zone-filter quer
 config.py             — DB credentials, API key, zone/hub scope, feed name map
 pjm_client.py          — DataMiner2 HTTP client: pagination, rate limiting, retry/backoff
 db_setup.py            — creates all tables and indexes
+queries.sql            — saved SQL functions for ODBC/BI access (see Saved queries below)
+install_queries.py     — installs/updates the functions in queries.sql
 ingest_pnodes.py       — one-time/quarterly pnode master load
 ingest_lmp.py          — DA and/or RT LMP ingest
 ingest_load.py         — hourly metered load ingest
@@ -93,6 +97,42 @@ Default zones in `config.py`: `DOM, AEP, COMED, PECO`. Default hubs: `AEP-DAYTON
 WESTERN HUB, EASTERN HUB, NEW JERSEY HUB`. The LMP ingest fetches all nodes of the requested
 type (ZONE or HUB) — the lists in `config.py` are reference documentation, not API filters.
 Backfill defaults to `2022-01-01`.
+
+## Saved queries
+
+`queries.sql` holds SQL functions installed in the database so BI/ODBC tools can call them
+directly instead of writing raw joins each time. Install/update with `python install_queries.py`.
+
+**`pjm_lmp_by_node(pnode_name, start_date DEFAULT NULL, end_date DEFAULT NULL)`** — combined
+DA + RT hourly LMP series for one node, optionally bounded by date (`end_date` inclusive):
+
+```sql
+SELECT * FROM pjm_lmp_by_node('AEP');                              -- full series
+SELECT * FROM pjm_lmp_by_node('AEP', '2026-06-30', '2026-07-07');  -- one week
+```
+
+Returns `start_time` (= `datetime_beginning_utc`), `da_lmp`, `rt_lmp`. Uses a FULL OUTER JOIN
+on `(datetime_beginning_utc)` within the node, so hours where only one of DA/RT loaded show up
+with a NULL on the missing side rather than being silently dropped.
+
+Note: `pnode_name` is never ambiguous between ZONE and HUB types (verified — no name in
+`pjm_pnodes` has more than one distinct `pnode_type`), so no type filter is needed.
+
+**`pjm_lmp_monthly_peak(pnode_name, start_date DEFAULT NULL, end_date DEFAULT NULL)`** —
+average DA + RT LMP by calendar month, split into `ON-PEAK` / `OFF-PEAK`:
+
+```sql
+SELECT * FROM pjm_lmp_monthly_peak('AEP');
+SELECT * FROM pjm_lmp_monthly_peak('AEP', '2025-01-01', '2025-12-31');
+```
+
+Returns `month_start`, `peak_type`, `avg_da_lmp`, `avg_rt_lmp`, `hour_count`. On-peak follows
+the standard PJM/Eastern definition — HE 0800-2300 (hour-beginning 07:00-22:00), Monday-Friday,
+excluding NERC holidays (`pjm_nerc_holidays`) — evaluated in `America/New_York` local time, not
+UTC. Everything else (nights, weekends, holidays) is off-peak. Calendar months are also bucketed
+in local time, so `start_date`/`end_date` (UTC-bound, same as `pjm_lmp_by_node`) can pull in or
+exclude a handful of hours at the very edge of a month — pass wide bounds if you need clean
+month totals, or leave them `NULL` for the full series.
 
 ## Capacity market note
 
