@@ -5,6 +5,17 @@ generation capacity. Built to support LCOC (Levelized Cost of Compute) datacente
 analysis: locational energy price, demand growth, and supply mix for the zones where hyperscale
 datacenters concentrate.
 
+## Background
+
+I converted my c. 2017 Dell OptiPlex to Linux with a new 1TB SSD and 16GB of RAM, and do my
+development work using VS Code over SSH from my Windows 11 desktop. PostgreSQL was already
+installed on the Linux box.
+
+The initial ingest of DataMiner2 data took about 36 hours, over a weekend, running under a
+non-member API rate limit. A cron job now runs on the Linux box early Monday mornings to
+incrementally ingest new data each week. PJM's most recent data can be incomplete or revised,
+so the cron job is designed to back-fill accordingly.
+
 ## Prerequisites
 
 - Python 3.12+
