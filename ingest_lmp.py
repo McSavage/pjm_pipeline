@@ -158,33 +158,52 @@ def ingest_lmp(
     log.info(f"Done. Total rows inserted: {total_inserted}")
 
 
-def incremental_ingest(feed: str, full_nodal: bool = False):
-    """Load from the day after last loaded date through yesterday."""
-    conn      = psycopg2.connect(**DB)
-    feed_key  = f"lmp_{feed}"
+def incremental_ingest(feed: str, full_nodal: bool = False, lookback_days: int = 35):
+    """Load from the earliest not-yet-successfully-loaded day in the last
+    `lookback_days` through yesterday.
 
-    # Find the latest date we have any data for
+    Deliberately scans pjm_ingest_log (per-day, keyed by the EPT day_str we
+    actually requested) rather than taking MAX(datetime_beginning_utc)::date
+    from the data table: a day's last EPT hour lands on the *next* UTC
+    calendar date, so that approach overshoots by one day whenever the most
+    recently loaded day is a Sunday — which, given this runs off a Monday
+    cron, is every week — permanently skipping the Monday after it. Scanning
+    the log (via get_last_loaded_date, same check ingest_lmp uses to skip
+    already-loaded days) also means a day that came back with 0 rows (e.g.
+    verified RT data not yet published) gets retried on a later run instead
+    of being skipped forever once subsequent days succeed.
+    """
+    conn     = psycopg2.connect(**DB)
+    feed_key = f"lmp_{feed}"
+    end_d    = date.today() - timedelta(days=1)  # through yesterday
+
     cur = conn.cursor()
-    table = f"pjm_{feed}_lmp"
-    cur.execute(f"SELECT MAX(datetime_beginning_utc)::date FROM {table}")
-    row = cur.fetchone()
+    cur.execute("SELECT 1 FROM pjm_ingest_log WHERE feed LIKE %s LIMIT 1", (f"{feed_key}_%",))
+    has_any_data = cur.fetchone() is not None
     cur.close()
-    conn.close()
 
-    last_date = row[0] if row and row[0] else None
-
-    if last_date:
-        start = (last_date + timedelta(days=1)).isoformat()
-    else:
+    if not has_any_data:
+        conn.close()
         start = DEFAULT_START_DATE
         log.info(f"No existing data — starting from {start}")
-
-    end = (date.today() - timedelta(days=1)).isoformat()  # through yesterday
-
-    if start > end:
-        log.info(f"Already up to date through {end}")
+        end = end_d.isoformat()
+        log.info(f"Incremental {feed.upper()} LMP: {start} → {end}")
+        ingest_lmp(feed, start, end, full_nodal=full_nodal)
         return
 
+    start_d = None
+    for i in range(lookback_days, -1, -1):
+        d = end_d - timedelta(days=i)
+        if get_last_loaded_date(conn, f"{feed_key}_{d.isoformat()}") is None:
+            start_d = d
+            break
+    conn.close()
+
+    if start_d is None:
+        log.info(f"Already up to date through {end_d.isoformat()}")
+        return
+
+    start, end = start_d.isoformat(), end_d.isoformat()
     log.info(f"Incremental {feed.upper()} LMP: {start} → {end}")
     ingest_lmp(feed, start, end, full_nodal=full_nodal)
 
