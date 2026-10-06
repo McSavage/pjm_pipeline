@@ -64,6 +64,8 @@ weekly_update.sh       — runs all four incremental ingests in sequence; cron e
 logs/                  — weekly_update.sh output, one line per cron run
 01_lmp_explorer.ipynb  — exploratory notebook: zone comparison, DA/RT spread,
                          congestion ranking, fuel mix, DOM load vs LMP
+02_lmp_arima_ets.ipynb — ARIMA vs ETS forecasting demo on daily DA LMP, DOM vs AEP
+03_lmp_data_validation.ipynb — dense day×hour completeness grid (DA/RT, DOM/AEP) + gap report
 ```
 
 ## Running
