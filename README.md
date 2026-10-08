@@ -46,6 +46,17 @@ python install_queries.py     # installs saved query functions (idempotent, safe
 
 Indexes on `(time)` and `(zone/area, time)` for time-series and zone-filter queries.
 
+**Timestamps.** Every `datetime_*_utc` column is a true UTC `TIMESTAMPTZ`. DataMiner2 returns
+its `*_utc` fields as naive strings with no offset. Passed to Postgres as-is, they'd be read
+in the session timezone (`America/Chicago` on this box), so every ingest script parses them
+through `pjm_client.parse_utc()`, which attaches UTC explicitly. Any new ingest script must
+do the same. Before 2026-10-08 that step was missing: all PJM rows sat 5–6 hours late, and
+one hour per year was lost at each spring-forward. The data was repaired in place on that date.
+
+Spring-forward days have 23 hours and fall-back days 25, as expected. For time-of-day or
+calendar features, convert with `AT TIME ZONE 'America/New_York'` (EPT), and keep UTC as the
+row key.
+
 ## Files
 
 ```

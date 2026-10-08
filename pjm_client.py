@@ -17,11 +17,26 @@ Usage:
 
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
 
 from config import PAGE_SIZE, PJM_API_KEY, PJM_BASE_URL, REQUEST_DELAY_SECONDS
+
+def parse_utc(value: str | None) -> datetime | None:
+    """Parse a DataMiner2 *_utc field into a timezone-aware UTC datetime.
+
+    The API returns these as naive ISO strings ("2025-11-02T06:00:00"). Passed
+    to a TIMESTAMPTZ column as-is, Postgres reads them in the *session*
+    timezone (America/Chicago on this box), shifting every row 5–6 hours and
+    colliding two hours at each Chicago spring-forward. Always go through here.
+    """
+    if value is None:
+        return None
+    dt = datetime.fromisoformat(value)
+    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
 
 logging.basicConfig(
     level=logging.INFO,

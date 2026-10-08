@@ -18,7 +18,7 @@ import time
 import psycopg2
 from datetime import date, datetime, timedelta
 
-from pjm_client import PJMClient
+from pjm_client import PJMClient, parse_utc
 from config import DB, FEEDS, ZONES, HUBS, DEFAULT_START_DATE
 
 log = logging.getLogger(__name__)
@@ -76,10 +76,10 @@ def insert_lmp_rows(conn, table: str, rows: list[dict]) -> int:
 
         # da_hrl_lmps/rt_hrl_lmps only return datetime_beginning_utc — these are
         # hourly feeds, so the interval ends exactly one hour later.
-        beginning = r.get("datetime_beginning_utc")
-        ending = r.get("datetime_ending_utc")
+        beginning = parse_utc(r.get("datetime_beginning_utc"))
+        ending = parse_utc(r.get("datetime_ending_utc"))
         if ending is None and beginning is not None:
-            ending = (datetime.fromisoformat(beginning) + timedelta(hours=1)).isoformat()
+            ending = beginning + timedelta(hours=1)
 
         cur.execute(sql, (
             beginning,

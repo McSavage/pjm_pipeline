@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 import psycopg2
 
 from config import DB, DEFAULT_START_DATE, FEEDS
-from pjm_client import PJMClient
+from pjm_client import PJMClient, parse_utc
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
@@ -61,10 +61,10 @@ def insert_gen_rows(conn, rows: list[dict]) -> int:
     for r in rows:
         # gen_by_fuel only returns datetime_beginning_utc — hourly feed,
         # so the interval ends exactly one hour later.
-        beginning = r.get("datetime_beginning_utc")
-        ending = r.get("datetime_ending_utc")
+        beginning = parse_utc(r.get("datetime_beginning_utc"))
+        ending = parse_utc(r.get("datetime_ending_utc"))
         if ending is None and beginning is not None:
-            ending = (datetime.fromisoformat(beginning) + timedelta(hours=1)).isoformat()
+            ending = beginning + timedelta(hours=1)
 
         cur.execute(sql, (
             beginning,
