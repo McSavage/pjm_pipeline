@@ -49,16 +49,26 @@ python install_queries.py     # installs saved query functions (idempotent, safe
 
 Indexes on `(time)` and `(zone/area, time)` for time-series and zone-filter queries.
 
-**Timestamps.** Every `datetime_*_utc` column is a true UTC `TIMESTAMPTZ`. DataMiner2 returns
-its `*_utc` fields as naive strings with no offset. Passed to Postgres as-is, they'd be read
-in the session timezone (`America/Chicago` on this box), so every ingest script parses them
-through `pjm_client.parse_utc()`, which attaches UTC explicitly. Any new ingest script must
-do the same. Before 2026-10-08 that step was missing: all PJM rows sat 5–6 hours late, and
-one hour per year was lost at each spring-forward. The data was repaired in place on that date.
+**Timestamps.** Every `datetime_*_utc` column is a `TIMESTAMPTZ`, which stores an absolute
+moment in time. The database's default timezone is **`America/New_York` (EPT)**, set with
+`ALTER DATABASE pjm_pipeline SET timezone = 'America/New_York'`, because PJM reports
+everything in Eastern Prevailing Time, including western zones like COMED. That default
+affects only *display* and anything that relies on the session timezone:
 
-Spring-forward days have 23 hours and fall-back days 25, as expected. For time-of-day or
-calendar features, convert with `AT TIME ZONE 'America/New_York'` (EPT), and keep UTC as the
-row key.
+- Timestamps show in Eastern time in DBeaver, Excel, and query results.
+- A bare `::date` or `date_trunc(...)`, and a plain `DATE` compared against a timestamp
+  (as in the `queries.sql` date bounds), use Eastern midnight, i.e. PJM's operating day.
+
+The default doesn't change what's stored. DataMiner2 returns its `*_utc` fields as naive
+strings with no offset, and Postgres would read those in the session timezone, so every
+ingest script parses them through `pjm_client.parse_utc()`, which attaches UTC explicitly.
+Any new ingest script must do the same. Before 2026-10-08 that step was missing and the
+session timezone was `America/Chicago`: all PJM rows sat 5–6 hours late, and one hour per
+year was lost at each spring-forward. The data was repaired in place on that date.
+
+Spring-forward days have 23 hours and fall-back days 25, as expected. In notebooks, convert
+explicitly with `AT TIME ZONE 'America/New_York'` rather than relying on the default, and
+keep UTC as the row key.
 
 ## Files
 
@@ -162,9 +172,9 @@ Returns `month_start`, `peak_type`, `avg_da_lmp`, `avg_rt_lmp`, `hour_count`. On
 the standard PJM/Eastern definition — HE 0800-2300 (hour-beginning 07:00-22:00), Monday-Friday,
 excluding NERC holidays (`pjm_nerc_holidays`) — evaluated in `America/New_York` local time, not
 UTC. Everything else (nights, weekends, holidays) is off-peak. Calendar months are also bucketed
-in local time, so `start_date`/`end_date` (UTC-bound, same as `pjm_lmp_by_node`) can pull in or
-exclude a handful of hours at the very edge of a month — pass wide bounds if you need clean
-month totals, or leave them `NULL` for the full series.
+in local time. `start_date`/`end_date` (same as `pjm_lmp_by_node`) are inclusive dates
+interpreted at Eastern midnight, the database default, so a bounded call covers whole PJM
+operating days and whole months.
 
 ## Capacity market note
 
