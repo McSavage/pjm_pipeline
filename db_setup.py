@@ -94,6 +94,80 @@ CREATE TABLE IF NOT EXISTS pjm_gen_capacity (
     PRIMARY KEY (datetime_beginning_utc)
 );
 
+-- ── Hourly weather by location (Open-Meteo) ───────────────────────────────
+-- One row per weather location (config.WEATHER_LOCATIONS) — a zone may have
+-- several; use the weather_zone_hourly view for zone-level values. Upserted,
+-- not insert-once: recent observed values are provisional and get revised.
+-- temp_fcst_d2_f is issued before the DA close for every hour of the
+-- operating day; d1 is not for late-day hours (lookahead leakage for DA).
+CREATE TABLE IF NOT EXISTS weather_hourly (
+    datetime_beginning_utc  TIMESTAMPTZ     NOT NULL,
+    location                TEXT            NOT NULL,
+    zone                    TEXT            NOT NULL,
+    temp_obs_f              NUMERIC(5,1),   -- ERA5 reanalysis (observed)
+    temp_fcst_d1_f          NUMERIC(5,1),   -- GFS forecast issued ~24h prior
+    temp_fcst_d2_f          NUMERIC(5,1),   -- GFS forecast issued ~48h prior
+    updated_at              TIMESTAMPTZ     DEFAULT NOW(),
+    PRIMARY KEY (datetime_beginning_utc, location)
+);
+
+-- Wind / humidity / cloud cover, added after the table was first created —
+-- ADD COLUMN IF NOT EXISTS upgrades an existing table in place. The GFS
+-- archive only carries these forecasts from 2024-01-20 (temperature goes back
+-- to 2021), so *_fcst_* columns other than temperature are NULL before that.
+ALTER TABLE weather_hourly
+    ADD COLUMN IF NOT EXISTS wind_obs_mph       NUMERIC(5,1),
+    ADD COLUMN IF NOT EXISTS wind_fcst_d1_mph   NUMERIC(5,1),
+    ADD COLUMN IF NOT EXISTS wind_fcst_d2_mph   NUMERIC(5,1),
+    ADD COLUMN IF NOT EXISTS rh_obs_pct         NUMERIC(4,1),
+    ADD COLUMN IF NOT EXISTS rh_fcst_d1_pct     NUMERIC(4,1),
+    ADD COLUMN IF NOT EXISTS rh_fcst_d2_pct     NUMERIC(4,1),
+    ADD COLUMN IF NOT EXISTS cloud_obs_pct      NUMERIC(4,1),
+    ADD COLUMN IF NOT EXISTS cloud_fcst_d1_pct  NUMERIC(4,1),
+    ADD COLUMN IF NOT EXISTS cloud_fcst_d2_pct  NUMERIC(4,1);
+
+-- PJM Manual 19 §3.2 weather parameters, derived per source (obs/d1/d2):
+--   WWP (winter, wind-adjusted dry bulb) = DB − 0.5·(WIND − 10) if WIND > 10 mph, else DB
+--   THI (summer, temperature-humidity)   = DB − 0.55·(1 − HUM)·(DB − 58) if DB ≥ 58°F, else DB
+-- NULL whenever an input is NULL, rather than silently falling back to DB,
+-- so a column never mixes adjusted and unadjusted values.
+ALTER TABLE weather_hourly
+    ADD COLUMN IF NOT EXISTS wwp_obs_f NUMERIC(5,1) GENERATED ALWAYS AS (
+        CASE WHEN temp_obs_f IS NULL OR wind_obs_mph IS NULL THEN NULL
+             WHEN wind_obs_mph > 10 THEN temp_obs_f - 0.5 * (wind_obs_mph - 10)
+             ELSE temp_obs_f END) STORED,
+    ADD COLUMN IF NOT EXISTS wwp_fcst_d1_f NUMERIC(5,1) GENERATED ALWAYS AS (
+        CASE WHEN temp_fcst_d1_f IS NULL OR wind_fcst_d1_mph IS NULL THEN NULL
+             WHEN wind_fcst_d1_mph > 10 THEN temp_fcst_d1_f - 0.5 * (wind_fcst_d1_mph - 10)
+             ELSE temp_fcst_d1_f END) STORED,
+    ADD COLUMN IF NOT EXISTS wwp_fcst_d2_f NUMERIC(5,1) GENERATED ALWAYS AS (
+        CASE WHEN temp_fcst_d2_f IS NULL OR wind_fcst_d2_mph IS NULL THEN NULL
+             WHEN wind_fcst_d2_mph > 10 THEN temp_fcst_d2_f - 0.5 * (wind_fcst_d2_mph - 10)
+             ELSE temp_fcst_d2_f END) STORED,
+    ADD COLUMN IF NOT EXISTS thi_obs_f NUMERIC(5,1) GENERATED ALWAYS AS (
+        CASE WHEN temp_obs_f IS NULL OR rh_obs_pct IS NULL THEN NULL
+             WHEN temp_obs_f >= 58 THEN temp_obs_f - 0.55 * (1 - rh_obs_pct / 100) * (temp_obs_f - 58)
+             ELSE temp_obs_f END) STORED,
+    ADD COLUMN IF NOT EXISTS thi_fcst_d1_f NUMERIC(5,1) GENERATED ALWAYS AS (
+        CASE WHEN temp_fcst_d1_f IS NULL OR rh_fcst_d1_pct IS NULL THEN NULL
+             WHEN temp_fcst_d1_f >= 58 THEN temp_fcst_d1_f - 0.55 * (1 - rh_fcst_d1_pct / 100) * (temp_fcst_d1_f - 58)
+             ELSE temp_fcst_d1_f END) STORED,
+    ADD COLUMN IF NOT EXISTS thi_fcst_d2_f NUMERIC(5,1) GENERATED ALWAYS AS (
+        CASE WHEN temp_fcst_d2_f IS NULL OR rh_fcst_d2_pct IS NULL THEN NULL
+             WHEN temp_fcst_d2_f >= 58 THEN temp_fcst_d2_f - 0.55 * (1 - rh_fcst_d2_pct / 100) * (temp_fcst_d2_f - 58)
+             ELSE temp_fcst_d2_f END) STORED;
+
+-- ── Weather locations and zone weights ────────────────────────────────────
+-- Mirror of config.WEATHER_LOCATIONS, re-synced by ingest_weather.py on every
+-- run so config.py stays the source of truth. weight is relative within a zone.
+CREATE TABLE IF NOT EXISTS weather_locations (
+    location    TEXT            PRIMARY KEY,
+    zone        TEXT            NOT NULL,
+    lat         NUMERIC(7,4)    NOT NULL,
+    lon         NUMERIC(7,4)    NOT NULL,
+    weight      NUMERIC(6,4)    NOT NULL CHECK (weight > 0)
+);
+
 -- ── Ingestion audit log ───────────────────────────────────────────────────
 -- Tracks what has been loaded so incremental updates skip already-loaded dates.
 CREATE TABLE IF NOT EXISTS pjm_ingest_log (
@@ -189,6 +263,53 @@ INSERT INTO pjm_nerc_holidays (holiday_date, holiday_name) VALUES
 ON CONFLICT (holiday_date) DO NOTHING;
 """
 
+# ── Zone-weighted weather view ───────────────────────────────────────────────
+# Weighted average of each zone's locations (weather_locations.weight). A value
+# is NULL unless every location in the zone has it for that hour, so the
+# station mix never silently changes. WWP/THI are recomputed from the weighted
+# inputs (zone weather first, then the Manual 19 transform), not averaged from
+# per-location indices. Generated from one variable list so the columns can't
+# drift from weather_hourly's.
+
+_WEATHER_VARS = [f"{v}_{src}_{u}"
+                 for v, u in [("temp", "f"), ("wind", "mph"), ("rh", "pct"), ("cloud", "pct")]
+                 for src in ("obs", "fcst_d1", "fcst_d2")]
+
+
+def _weighted(col: str) -> str:
+    return (f"ROUND(CASE WHEN COUNT(h.{col}) = z.n_locations "
+            f"THEN SUM(h.{col} * l.weight) / SUM(l.weight) END, 1) AS {col}")
+
+
+def _indices(src: str) -> str:
+    t, w, rh = f"temp_{src}_f", f"wind_{src}_mph", f"rh_{src}_pct"
+    return f"""
+        ROUND(CASE WHEN {t} IS NULL OR {w} IS NULL THEN NULL
+                   WHEN {w} > 10 THEN {t} - 0.5 * ({w} - 10)
+                   ELSE {t} END, 1) AS wwp_{src}_f,
+        ROUND(CASE WHEN {t} IS NULL OR {rh} IS NULL THEN NULL
+                   WHEN {t} >= 58 THEN {t} - 0.55 * (1 - {rh} / 100) * ({t} - 58)
+                   ELSE {t} END, 1) AS thi_{src}_f"""
+
+
+WEATHER_VIEW_SQL = f"""
+DROP VIEW IF EXISTS weather_zone_hourly;
+CREATE VIEW weather_zone_hourly AS
+WITH zones AS (
+    SELECT zone, COUNT(*) AS n_locations FROM weather_locations GROUP BY zone
+),
+weighted AS (
+    SELECT h.datetime_beginning_utc, l.zone, z.n_locations,
+           {", ".join(_weighted(c) for c in _WEATHER_VARS)}
+    FROM weather_hourly h
+    JOIN weather_locations l ON l.location = h.location
+    JOIN zones z ON z.zone = l.zone
+    GROUP BY h.datetime_beginning_utc, l.zone, z.n_locations
+)
+SELECT weighted.*,{",".join(_indices(src) for src in ("obs", "fcst_d1", "fcst_d2"))}
+FROM weighted;
+"""
+
 INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_da_lmp_time       ON pjm_da_lmp (datetime_beginning_utc)",
     "CREATE INDEX IF NOT EXISTS idx_da_lmp_zone_time  ON pjm_da_lmp (pnode_name, datetime_beginning_utc)",
@@ -197,6 +318,7 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_load_time         ON pjm_load_metered (datetime_beginning_utc)",
     "CREATE INDEX IF NOT EXISTS idx_load_area_time    ON pjm_load_metered (area, datetime_beginning_utc)",
     "CREATE INDEX IF NOT EXISTS idx_gen_fuel_time     ON pjm_gen_by_fuel (datetime_beginning_utc)",
+    "CREATE INDEX IF NOT EXISTS idx_weather_zone_time ON weather_hourly (zone, datetime_beginning_utc)",
 ]
 
 
@@ -213,6 +335,10 @@ def setup():
     for sql in INDEX_SQL:
         cur.execute(sql)
     log.info("Indexes created.")
+
+    log.info("Creating weather_zone_hourly view...")
+    cur.execute(WEATHER_VIEW_SQL)
+    log.info("View created.")
 
     log.info("Seeding NERC holiday calendar...")
     cur.execute(HOLIDAY_SQL)

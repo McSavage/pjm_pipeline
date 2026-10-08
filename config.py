@@ -65,3 +65,20 @@ FEEDS = {
     "gen_capacity": "day_gen_capacity",
     "rt_5min_lmp":  "rt_fivemin_hrl_lmps",   # granular, use sparingly
 }
+
+# ── Weather (Open-Meteo, no API key, non-commercial licence) ──────────────────
+
+# Weather points per zone. A zone's weather (view weather_zone_hourly) is the
+# weight-averaged value of its locations; weights are relative within a zone.
+# ingest_weather.py syncs this list into the weather_locations table.
+WEATHER_LOCATIONS = [
+    {"location": "IAD", "zone": "DOM",   "lat": 38.95, "lon": -77.45, "weight": 0.6},  # Dulles / Loudoun datacenter cluster
+    {"location": "RIC", "zone": "DOM",   "lat": 37.51, "lon": -77.32, "weight": 0.2},  # Richmond
+    {"location": "ORF", "zone": "DOM",   "lat": 36.90, "lon": -76.20, "weight": 0.2},  # Norfolk
+    {"location": "CMH", "zone": "AEP",   "lat": 40.00, "lon": -82.88, "weight": 1.0},  # Columbus
+    {"location": "ORD", "zone": "COMED", "lat": 41.98, "lon": -87.90, "weight": 1.0},  # O'Hare
+    {"location": "PHL", "zone": "PECO",  "lat": 39.87, "lon": -75.24, "weight": 1.0},  # Philadelphia
+]
+
+OPEN_METEO_ARCHIVE_URL       = "https://archive-api.open-meteo.com/v1/archive"
+OPEN_METEO_PREVIOUS_RUNS_URL = "https://previous-runs-api.open-meteo.com/v1/forecast"
