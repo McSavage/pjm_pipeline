@@ -18,7 +18,7 @@ import time
 import psycopg2
 from datetime import date, datetime, timedelta
 
-from pjm_client import PJMClient, parse_utc
+from pjm_client import PJMClient, first_present, parse_utc
 from config import DB, FEEDS, ZONES, HUBS, DEFAULT_START_DATE
 
 log = logging.getLogger(__name__)
@@ -88,9 +88,9 @@ def insert_lmp_rows(conn, table: str, rows: list[dict]) -> int:
             r.get("pnode_name"),
             r.get("voltage"),
             r.get("type"),
-            r.get(lmp_field)          or r.get("total_lmp"),
-            r.get(cong_field)         or r.get("congestion_price"),
-            r.get(loss_field)         or r.get("marginal_loss_price"),
+            first_present(r, lmp_field, "total_lmp"),
+            first_present(r, cong_field, "congestion_price"),
+            first_present(r, loss_field, "marginal_loss_price"),
         ))
         inserted += 1
 

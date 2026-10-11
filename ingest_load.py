@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 import psycopg2
 
 from config import DB, DEFAULT_START_DATE, FEEDS
-from pjm_client import PJMClient, parse_utc
+from pjm_client import PJMClient, first_present, parse_utc
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
@@ -71,8 +71,8 @@ def insert_load_rows(conn, rows: list[dict]) -> int:
         cur.execute(sql, (
             beginning,
             ending,
-            r.get("area") or r.get("load_area"),
-            r.get("mw")   or r.get("metered_mwh"),
+            first_present(r, "area", "load_area"),
+            first_present(r, "mw", "metered_mwh"),
             r.get("is_verified") in (True, "Y", "1", 1),
         ))
         inserted += 1

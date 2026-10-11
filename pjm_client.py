@@ -38,6 +38,19 @@ def parse_utc(value: str | None) -> datetime | None:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
+def first_present(row: dict, *keys: str) -> Any:
+    """Return the first of `keys` whose value in `row` is not None.
+
+    Use instead of `row.get(a) or row.get(b)`: `or` treats a real 0 (common for
+    congestion/loss components) as missing and falls through, often to None.
+    """
+    for key in keys:
+        value = row.get(key)
+        if value is not None:
+            return value
+    return None
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
