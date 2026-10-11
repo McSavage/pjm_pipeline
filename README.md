@@ -7,9 +7,8 @@ datacenters concentrate.
 
 ## Background
 
-I converted my c. 2017 Dell OptiPlex to Linux with a new 1TB SSD and 16GB of RAM, and do my
-development work using VS Code over SSH from my Windows 11 desktop. PostgreSQL was already
-installed on the Linux box.
+I converted my c. 2017 Dell OptiPlex to Linux with a new 1TB SSD, and do my
+development work using VS Code over SSH from my Windows 11 desktop. I had previously installed PostgreSQL on the Linux box.
 
 The initial ingest of DataMiner2 data took about 36 hours, over a weekend, running under a
 non-member API rate limit. A cron job now runs on the Linux box early Monday mornings to
