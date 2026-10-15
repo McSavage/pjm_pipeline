@@ -68,6 +68,20 @@ CREATE TABLE IF NOT EXISTS pjm_load_metered (
     PRIMARY KEY (datetime_beginning_utc, area)
 );
 
+-- ── Hourly load forecast by forecast area (every vintage) ─────────────────
+-- load_frcstd_hist keeps each forecast PJM issued (~05:45, 09:45, 11:45,
+-- 17:45, 23:45 EPT), so one target hour has ~5-10 rows, one per evaluated_at.
+-- Forecast areas are not the same set as metered-load zones: DOM/AEP/COMED
+-- match, but PECO, PSEG, BGE, etc. only appear rolled up into MIDATL.
+-- For DA price work use the pjm_load_forecast_da view, not this table.
+CREATE TABLE IF NOT EXISTS pjm_load_forecast (
+    forecast_hour_beginning_utc TIMESTAMPTZ NOT NULL,
+    forecast_area               TEXT        NOT NULL,
+    evaluated_at_utc            TIMESTAMPTZ NOT NULL,
+    forecast_load_mw            NUMERIC(10,2),
+    PRIMARY KEY (forecast_hour_beginning_utc, forecast_area, evaluated_at_utc)
+);
+
 -- ── Generation by fuel type (hourly) ─────────────────────────────────────
 CREATE TABLE IF NOT EXISTS pjm_gen_by_fuel (
     datetime_beginning_utc  TIMESTAMPTZ     NOT NULL,
@@ -310,6 +324,24 @@ SELECT weighted.*,{",".join(_indices(src) for src in ("obs", "fcst_d1", "fcst_d2
 FROM weighted;
 """
 
+# The forecast the day-ahead market actually saw: for each target hour, the
+# latest vintage issued before DA bids closed at 10:30 EPT the day before the
+# operating day (in practice the 09:45 EPT run). Later vintages would leak
+# information the DA market didn't have.
+LOAD_FORECAST_DA_VIEW_SQL = """
+CREATE OR REPLACE VIEW pjm_load_forecast_da AS
+SELECT DISTINCT ON (f.forecast_hour_beginning_utc, f.forecast_area)
+    f.forecast_hour_beginning_utc,
+    f.forecast_area,
+    f.evaluated_at_utc,
+    f.forecast_load_mw
+FROM pjm_load_forecast f
+WHERE f.evaluated_at_utc <
+      (((f.forecast_hour_beginning_utc AT TIME ZONE 'America/New_York')::date - 1)
+       + TIME '10:30') AT TIME ZONE 'America/New_York'
+ORDER BY f.forecast_hour_beginning_utc, f.forecast_area, f.evaluated_at_utc DESC;
+"""
+
 INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_da_lmp_time       ON pjm_da_lmp (datetime_beginning_utc)",
     "CREATE INDEX IF NOT EXISTS idx_da_lmp_zone_time  ON pjm_da_lmp (pnode_name, datetime_beginning_utc)",
@@ -317,6 +349,7 @@ INDEX_SQL = [
     "CREATE INDEX IF NOT EXISTS idx_rt_lmp_zone_time  ON pjm_rt_lmp (pnode_name, datetime_beginning_utc)",
     "CREATE INDEX IF NOT EXISTS idx_load_time         ON pjm_load_metered (datetime_beginning_utc)",
     "CREATE INDEX IF NOT EXISTS idx_load_area_time    ON pjm_load_metered (area, datetime_beginning_utc)",
+    "CREATE INDEX IF NOT EXISTS idx_load_fcst_area_time ON pjm_load_forecast (forecast_area, forecast_hour_beginning_utc)",
     "CREATE INDEX IF NOT EXISTS idx_gen_fuel_time     ON pjm_gen_by_fuel (datetime_beginning_utc)",
     "CREATE INDEX IF NOT EXISTS idx_weather_zone_time ON weather_hourly (zone, datetime_beginning_utc)",
 ]
@@ -338,6 +371,10 @@ def setup():
 
     log.info("Creating weather_zone_hourly view...")
     cur.execute(WEATHER_VIEW_SQL)
+    log.info("View created.")
+
+    log.info("Creating pjm_load_forecast_da view...")
+    cur.execute(LOAD_FORECAST_DA_VIEW_SQL)
     log.info("View created.")
 
     log.info("Seeding NERC holiday calendar...")

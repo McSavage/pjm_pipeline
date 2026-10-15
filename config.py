@@ -61,6 +61,7 @@ FEEDS = {
     "da_lmp":       "da_hrl_lmps",
     "rt_lmp":       "rt_hrl_lmps",
     "load_metered": "hrl_load_metered",
+    "load_forecast": "load_frcstd_hist",
     "gen_by_fuel":  "gen_by_fuel",
     "gen_capacity": "day_gen_capacity",
     "rt_5min_lmp":  "rt_fivemin_hrl_lmps",   # granular, use sparingly

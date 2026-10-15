@@ -1,0 +1,158 @@
+"""
+ingest_load_forecast.py — Ingest PJM hourly load forecasts (every vintage) by forecast area.
+
+Each operating day is fetched by forecast_hour_beginning_ept, which returns
+every forecast PJM issued for that day's hours — the D-1 runs plus the
+same-day updates. See pjm_load_forecast_da (db_setup.py) for the DA-relevant
+vintage.
+
+    python ingest_load_forecast.py --start 2022-01-01 --end 2024-12-31
+    python ingest_load_forecast.py --incremental
+"""
+
+import argparse
+import logging
+import time
+from datetime import date, datetime, timedelta
+
+import psycopg2
+
+from config import DB, DEFAULT_START_DATE, FEEDS
+from pjm_client import PJMClient, parse_utc
+
+log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-8s  %(message)s")
+
+LOG_FEED_KEY = "load_forecast"
+
+
+def get_last_loaded_date(conn, feed_key: str) -> date | None:
+    # rows_inserted > 0 so a day that came back empty gets retried on the
+    # next run instead of being marked done forever.
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT MAX(date_loaded) FROM pjm_ingest_log WHERE feed = %s AND rows_inserted > 0",
+        (feed_key,)
+    )
+    row = cur.fetchone()
+    cur.close()
+    return row[0] if row and row[0] else None
+
+
+def log_loaded_date(conn, feed_key: str, d: date, rows: int):
+    cur = conn.cursor()
+    cur.execute(
+        """INSERT INTO pjm_ingest_log (feed, date_loaded, rows_inserted)
+           VALUES (%s, %s, %s)
+           ON CONFLICT (feed, date_loaded) DO UPDATE SET
+               rows_inserted = EXCLUDED.rows_inserted,
+               loaded_at     = NOW()""",
+        (feed_key, d, rows)
+    )
+    conn.commit()
+    cur.close()
+
+
+def insert_forecast_rows(conn, rows: list[dict]) -> int:
+    if not rows:
+        return 0
+    cur = conn.cursor()
+    sql = """
+        INSERT INTO pjm_load_forecast
+            (forecast_hour_beginning_utc, forecast_area, evaluated_at_utc, forecast_load_mw)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (forecast_hour_beginning_utc, forecast_area, evaluated_at_utc) DO NOTHING
+    """
+    inserted = 0
+    for r in rows:
+        cur.execute(sql, (
+            parse_utc(r.get("forecast_hour_beginning_utc")),
+            r.get("forecast_area"),
+            parse_utc(r.get("evaluated_at_utc")),
+            r.get("forecast_load_mw"),
+        ))
+        inserted += 1
+    conn.commit()
+    cur.close()
+    return inserted
+
+
+def ingest_load_forecast(start_date: str, end_date: str):
+    client = PJMClient()
+    conn   = psycopg2.connect(**DB)
+
+    current = datetime.fromisoformat(start_date).date()
+    end     = datetime.fromisoformat(end_date).date()
+    total   = 0
+
+    while current <= end:
+        day_str = current.strftime("%Y-%m-%d")
+
+        if get_last_loaded_date(conn, f"{LOG_FEED_KEY}_{day_str}"):
+            log.info(f"  {day_str} already loaded — skipping")
+            current += timedelta(days=1)
+            continue
+
+        log.info(f"Fetching load forecast {day_str}...")
+        params = {"forecast_hour_beginning_ept": day_str}
+        rows = client.fetch(FEEDS["load_forecast"], params)
+        time.sleep(client.delay)  # pace requests — daily response (~2k rows) fits in one page
+        n    = insert_forecast_rows(conn, rows)
+        log_loaded_date(conn, f"{LOG_FEED_KEY}_{day_str}", current, n)
+        total += n
+        log.info(f"  Inserted {n} rows")
+        current += timedelta(days=1)
+
+    conn.close()
+    log.info(f"Load forecast ingest complete. Total rows: {total}")
+
+
+def incremental_load_forecast(lookback_days: int = 35):
+    """Load from the earliest not-yet-successfully-loaded day in the last
+    `lookback_days` through yesterday. Same per-day log scan as ingest_load.py.
+
+    Stops at yesterday, not tomorrow, even though D+1 forecasts already exist:
+    a day is logged as done once fetched, so loading it before its last
+    same-day vintage is issued would leave those vintages missing for good.
+    """
+    conn = psycopg2.connect(**DB)
+    end_d = date.today() - timedelta(days=1)  # through yesterday
+
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM pjm_ingest_log WHERE feed LIKE %s LIMIT 1", (f"{LOG_FEED_KEY}_%",))
+    has_any_data = cur.fetchone() is not None
+    cur.close()
+
+    if not has_any_data:
+        conn.close()
+        start = DEFAULT_START_DATE
+        log.info(f"No existing data — starting from {start}")
+        ingest_load_forecast(start, end_d.isoformat())
+        return
+
+    start_d = None
+    for i in range(lookback_days, -1, -1):
+        d = end_d - timedelta(days=i)
+        if get_last_loaded_date(conn, f"{LOG_FEED_KEY}_{d.isoformat()}") is None:
+            start_d = d
+            break
+    conn.close()
+
+    if start_d is None:
+        log.info(f"Load forecast already up to date through {end_d.isoformat()}")
+        return
+
+    ingest_load_forecast(start_d.isoformat(), end_d.isoformat())
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--start",       default=DEFAULT_START_DATE)
+    parser.add_argument("--end",         default=(date.today() - timedelta(days=1)).isoformat())
+    parser.add_argument("--incremental", action="store_true")
+    args = parser.parse_args()
+
+    if args.incremental:
+        incremental_load_forecast()
+    else:
+        ingest_load_forecast(args.start, args.end)

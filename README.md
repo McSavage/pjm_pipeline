@@ -1,7 +1,7 @@
 # PJM Pipeline
 
-Local PostgreSQL pipeline for PJM DataMiner2 data — LMPs, metered load, generation mix, and
-generation capacity. Built to support LCOC (Levelized Cost of Compute) datacenter-electricity
+Local PostgreSQL pipeline for PJM DataMiner2 data — LMPs, metered and forecast load, generation
+mix, and generation capacity. Built to support LCOC (Levelized Cost of Compute) datacenter-electricity
 analysis: locational energy price, demand growth, and supply mix for the zones where hyperscale
 datacenters concentrate.
 
@@ -38,6 +38,8 @@ python install_queries.py     # installs saved query functions (idempotent, safe
 | `pjm_da_lmp` | hourly, per node | `ingest_lmp.py --feed da` | Day-ahead LMP: energy + congestion + marginal loss |
 | `pjm_rt_lmp` | hourly, per node | `ingest_lmp.py --feed rt` | Real-time LMP — DA/RT spread is a volatility signal |
 | `pjm_load_metered` | hourly, per zone | `ingest_load.py` | Metered load by zone — demand growth proxy |
+| `pjm_load_forecast` | hourly, per forecast area, per forecast vintage | `ingest_load_forecast.py` | PJM's own load forecast, every issued vintage (~05:45/09:45/11:45/17:45/23:45 EPT) |
+| `pjm_load_forecast_da` (view) | hourly, per forecast area | view over `pjm_load_forecast` | The vintage the DA market saw (latest before 10:30 EPT on D-1) — **use this for DA price models** |
 | `pjm_gen_by_fuel` | hourly, per fuel type | `ingest_gen.py` | Generation mix: coal, gas, nuclear, solar, wind, etc. |
 | `pjm_gen_capacity` | hourly, RTO-wide | `ingest_gen_capacity.py` | Economic/emergency max MW + RPM committed capacity (system-wide, not zonal) |
 | `weather_locations` | one row per weather location | `ingest_weather.py` (synced from `config.WEATHER_LOCATIONS`) | Location → zone mapping and weights for zone-level weather |
@@ -80,6 +82,7 @@ install_queries.py     — installs/updates the functions in queries.sql
 ingest_pnodes.py       — one-time/quarterly pnode master load
 ingest_lmp.py          — DA and/or RT LMP ingest
 ingest_load.py         — hourly metered load ingest
+ingest_load_forecast.py — hourly load forecast ingest (all vintages)
 ingest_gen.py          — hourly generation-by-fuel ingest
 ingest_gen_capacity.py — hourly RTO-wide generation capacity ingest
 ingest_weather.py      — hourly observed + forecast temperature per zone (Open-Meteo)
@@ -100,13 +103,14 @@ logs/                  — weekly_update.sh output, one line per cron run
 python ingest_pnodes.py                                         # run once (or quarterly)
 python ingest_lmp.py --feed both --start 2022-01-01 --end 2026-06-28
 python ingest_load.py --start 2022-01-01 --end 2026-06-28
+python ingest_load_forecast.py --start 2022-01-01 --end 2026-10-13
 python ingest_gen.py --start 2022-01-01 --end 2026-06-28
 python ingest_gen_capacity.py --start 2022-01-01 --end 2026-06-28
 python ingest_weather.py --start 2022-01-01                    # ~5 min, Open-Meteo, no PJM key
 python ingest_weather.py --start 2022-01-01 --locations RIC,ORF   # backfill specific stations only
 ```
 
-All four backfill scripts support `--incremental`, which resumes from the last loaded date
+All the PJM backfill scripts support `--incremental`, which resumes from the last loaded date
 rather than requiring explicit `--start`/`--end`:
 
 ```bash
@@ -115,7 +119,8 @@ python ingest_lmp.py --feed both --incremental
 
 ## Scheduling
 
-`weekly_update.sh` runs all five incremental ingests (LMP, load, gen, gen capacity, weather) in
+`weekly_update.sh` runs all six incremental ingests (LMP, load, load forecast, gen, gen capacity,
+weather) in
 sequence and logs output. Scheduled via cron to run every Monday morning:
 
 ```bash
@@ -174,6 +179,31 @@ UTC. Everything else (nights, weekends, holidays) is off-peak. Calendar months a
 in local time. `start_date`/`end_date` (same as `pjm_lmp_by_node`) are inclusive dates
 interpreted at Eastern midnight, the database default, so a bounded call covers whole PJM
 operating days and whole months.
+
+## Load forecast note
+
+`pjm_load_forecast` comes from DataMiner2's `load_frcstd_hist` feed, which keeps every forecast
+PJM issued (history from 2011). One target hour has roughly 5 D-1 vintages plus up to 5 same-day
+updates; `evaluated_at_utc` says when each was made.
+
+**Forecast areas are not the metered-load zones.** The areas are `AEP, APS, ATSI, COMED, DAY,
+DEOK, DOM, DUQ, EKPC, MIDATL, RTO`. DOM, AEP and COMED join directly to `pjm_load_metered.area`;
+**PECO has no forecast of its own** — it's inside MIDATL, along with PSEG, BGE, PPL, etc.
+
+**Which vintage.** For anything about DA prices use `pjm_load_forecast_da`, which takes the latest
+forecast issued before DA bids closed (10:30 EPT on the day before the operating day — in practice
+the 09:45 run). Later vintages contain information the DA market didn't have.
+
+```sql
+SELECT f.forecast_hour_beginning_utc, f.forecast_load_mw AS da_forecast_mw, m.mw AS metered_mw
+FROM pjm_load_forecast_da f
+JOIN pjm_load_metered m ON m.datetime_beginning_utc = f.forecast_hour_beginning_utc
+                       AND m.area = f.forecast_area
+WHERE f.forecast_area = 'DOM';
+```
+
+The incremental ingest stops at yesterday, like the others: a day is logged as done once fetched,
+so loading it before its last same-day vintage is issued would lose those vintages.
 
 ## Capacity market note
 

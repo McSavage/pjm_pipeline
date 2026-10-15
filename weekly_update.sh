@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # weekly_update.sh — pull the past week's PJM data into the local database.
 #
-# Intended to run every Monday (cron, systemd timer, etc.). Runs the four
+# Intended to run every Monday (cron, systemd timer, etc.). Runs the five
 # PJM incremental ingest scripts in sequence — they share one rate-limited API
 # key, so they must not run in parallel. The weather ingest uses Open-Meteo,
 # not the PJM key.
@@ -27,6 +27,7 @@ run_step() {
 
 run_step ingest_lmp.py --feed both --incremental
 run_step ingest_load.py --incremental
+run_step ingest_load_forecast.py --incremental
 run_step ingest_gen.py --incremental
 run_step ingest_gen_capacity.py --incremental
 run_step ingest_weather.py --incremental
